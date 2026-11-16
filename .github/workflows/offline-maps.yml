@@ -1,0 +1,82 @@
+# Builds the offline map files the app downloads and publishes them as a GitHub Release.
+#
+# Runs on the 2nd of every month (and whenever you press "Run workflow" on the Actions tab). Free on
+# public repositories. It downloads Great Britain from the latest Protomaps world map once (~1.5 GB),
+# cuts each region out of that local copy, and publishes:
+#   manifest.json                 which files exist and their sizes (the app reads this first)
+#   <region>-<build>.pmtiles      one per region (gb is the largest, ~1.5 GB; GitHub allows 2 GB per file)
+#
+# The app finds them at  https://github.com/<you>/<repo>/releases/latest/download/
+# (put that in local.properties as offline.mapsUrl=...). Best kept in its own public repository, so
+# app releases don't take over "latest".
+#
+# Region ids and boxes must match app/src/main/java/.../offline/MapRegions.kt (MapRegionsTest checks).
+# Map data © OpenStreetMap contributors (ODbL), via Protomaps.
+
+name: Offline maps
+
+on:
+  schedule:
+    - cron: "17 3 2 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Install pmtiles
+        run: |
+          curl -fsSL https://github.com/protomaps/go-pmtiles/releases/download/v1.31.2/go-pmtiles_1.31.2_Linux_x86_64.tar.gz | tar xz pmtiles
+          ./pmtiles version
+
+      - name: Cut the map
+        run: |
+          set -euo pipefail
+          BUILD=$(curl -fsS https://build-metadata.protomaps.dev/builds.json | jq -r '.[-1].key')
+          DATE=${BUILD%.pmtiles}
+          echo "DATE=$DATE" >> "$GITHUB_ENV"
+          mkdir out
+          # Whole country first, straight from Protomaps (zoom 0-14, as the app uses).
+          ./pmtiles extract "https://build.protomaps.com/$BUILD" "out/gb-$DATE.pmtiles" --bbox=-8.75,49.8,1.9,60.95 --maxzoom=14
+          # Regions are cut from that local copy: no extra load on Protomaps.
+          while read -r ID BBOX; do
+            ./pmtiles extract "out/gb-$DATE.pmtiles" "out/$ID-$DATE.pmtiles" --bbox="$BBOX"
+          done <<'REGIONS'
+          london -0.56,51.25,0.36,51.72
+          south-east -1.95,50.55,1.80,52.20
+          south-west -6.45,49.85,-1.45,52.10
+          east -0.75,51.45,1.80,53.10
+          midlands -3.25,51.80,0.45,53.60
+          north-west -3.65,52.90,-1.90,55.20
+          north-east -2.70,53.30,0.20,55.85
+          wales -5.40,51.35,-2.60,53.45
+          scotland -8.75,54.60,-0.70,60.95
+          northern-ireland -8.20,54.00,-5.40,55.35
+          REGIONS
+          # manifest.json: {"build":"20261115","regions":{"london":{"file":"london-20261115.pmtiles","bytes":...},...}}
+          cd out
+          for f in *.pmtiles; do
+            id=${f%-$DATE.pmtiles}
+            jq -n --arg id "$id" --arg f "$f" --argjson b "$(stat -c %s "$f")" '{($id): {file: $f, bytes: $b}}'
+          done | jq -s --arg d "$DATE" '{build: $d, regions: add}' > manifest.json
+          cat manifest.json
+          ls -la
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="maps-$DATE"
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --latest \
+            --title "Offline maps $DATE" \
+            --notes "Offline map files for SDL Assistant. Map data © OpenStreetMap contributors (ODbL), via Protomaps."
+          # Keep the newest 2 monthly releases; older ones only take up space.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' \
+            | grep '^maps-' | sort -r | tail -n +3 \
+            | xargs -r -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
