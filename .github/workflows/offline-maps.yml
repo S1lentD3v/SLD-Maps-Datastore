@@ -1,15 +1,5 @@
 # Builds the offline map files the app downloads and publishes them as a GitHub Release.
 #
-# Runs on the 2nd of every month (and whenever you press "Run workflow" on the Actions tab). Free on
-# public repositories. It downloads Great Britain from the latest Protomaps world map once (~1.5 GB),
-# cuts each region out of that local copy, and publishes:
-#   manifest.json                 which files exist and their sizes (the app reads this first)
-#   <region>-<build>.pmtiles      one per region (gb is the largest, ~1.5 GB; GitHub allows 2 GB per file)
-#
-# The app finds them at  https://github.com/<you>/<repo>/releases/latest/download/
-# (put that in local.properties as offline.mapsUrl=...). Best kept in its own public repository, so
-# app releases don't take over "latest".
-#
 # Region ids and boxes must match app/src/main/java/.../offline/MapRegions.kt (MapRegionsTest checks).
 # Map data © OpenStreetMap contributors (ODbL), via Protomaps.
 
